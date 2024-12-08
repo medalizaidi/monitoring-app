@@ -1,6 +1,12 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 from pymongo import MongoClient
-
+from fpdf import FPDF
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import logging
 
 app = Flask(__name__)
 
@@ -31,11 +37,10 @@ def add_data():
         calculate_and_store_max_metrics(date)
 
     return jsonify({"message": "Data inserted successfully!"}), 201
-import logging
+
 logging.basicConfig(level=logging.DEBUG)
 
 def calculate_and_store_max_metrics(date):
-
     # Fetch all documents for the given date
     shifts = list(metrics_collection.find({"date": date}))
     logging.debug(f"Shifts for {date}: {shifts}")
@@ -84,18 +89,12 @@ def calculate_and_store_max_metrics(date):
 # READ: Retrieve all shift data
 @app.route("/get", methods=["GET"])
 def get_all_data():
-    """
-    Retrieve all shift data.
-    """
     data = list(metrics_collection.find({}, {"_id": 0}))
     return jsonify(data)
 
 # READ: Retrieve shift data by date and shift
 @app.route("/get/<string:date>/<int:day_shift>", methods=["GET"])
 def get_data_by_shift(date, day_shift):
-    """
-    Retrieve shift data for a specific date and shift.
-    """
     data = metrics_collection.find_one({"date": date, "day-shift": day_shift}, {"_id": 0})
     if not data:
         return jsonify({"error": "No data found for the given date and shift"}), 404
@@ -104,22 +103,83 @@ def get_data_by_shift(date, day_shift):
 # READ: Retrieve daily max metrics
 @app.route("/get-daily-max/<string:date>", methods=["GET"])
 def get_daily_max(date):
-    """
-    Retrieve the maximum CPU and memory usage for a given date.
-    """
-
     max_metrics = daily_max_collection.find_one({"date": date}, {"_id": 0})
     if not max_metrics:
         return jsonify({"error": f"No max metrics found for the given date: {date}"}), 404
     return jsonify(max_metrics)
 
+# Export daily metrics as PDF
+@app.route("/export-pdf/<string:date>", methods=["GET"])
+def export_pdf(date):
+    data = daily_max_collection.find_one({"date": date}, {"_id": 0})
+    if not data:
+        return jsonify({"error": "No data found for the given date"}), 404
+
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    pdf.cell(200, 10, txt=f"Daily Metrics for {date}", ln=True, align="C")
+    for key, value in data.items():
+        pdf.cell(200, 10, txt=f"{key}: {value}", ln=True)
+
+    file_name = f"{date}_metrics.pdf"
+    pdf.output(file_name)
+
+    return send_file(file_name, as_attachment=True)
+
+# Send metrics PDF via email
+@app.route("/send-email/<string:date>", methods=["POST"])
+def send_email(date):
+    recipient_email = request.json.get("recipient_email")
+    if not recipient_email:
+        return jsonify({"error": "Recipient email is required"}), 400
+
+    # Generate PDF
+    pdf_path = f"{date}_metrics.pdf"
+    export_pdf(date)
+
+    # Email configuration
+    sender_email = "your-email@example.com"
+    sender_password = "your-email-password"
+    subject = f"Daily Metrics for {date}"
+
+    # Create email
+    message = MIMEMultipart()
+    message["From"] = sender_email
+    message["To"] = recipient_email
+    message["Subject"] = subject
+
+    # Email body
+    body = f"Hello team 
+I hope this email finds you well,
+Please find the attached report of the PTO project,
+Best regards.
+ {date}."
+    message.attach(MIMEText(body, "plain"))
+
+    # Attach PDF
+    with open(pdf_path, "rb") as attachment:
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(attachment.read())
+        encoders.encode_base64(part)
+        part.add_header(
+            "Content-Disposition",
+            f"attachment; filename= {pdf_path}",
+        )
+        message.attach(part)
+
+    # Send email
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, recipient_email, message.as_string())
+
+    return jsonify({"message": "Email sent successfully!"})
 
 # UPDATE: Update a shift document
 @app.route("/update/<string:date>/<int:day_shift>", methods=["PUT"])
 def update_shift_data(date, day_shift):
-    """
-    Update a shift document by date and day-shift.
-    """
     updated_data = request.json
     if not updated_data:
         return jsonify({"error": "Invalid data provided"}), 400
@@ -131,9 +191,6 @@ def update_shift_data(date, day_shift):
 # DELETE: Delete a shift document
 @app.route("/delete/<string:date>/<int:day_shift>", methods=["DELETE"])
 def delete_shift_data(date, day_shift):
-    """
-    Delete a shift document by date and day-shift.
-    """
     result = metrics_collection.delete_one({"date": date, "day-shift": day_shift})
     if result.deleted_count == 0:
         return jsonify({"error": "No data found to delete for the given date and shift"}), 404
