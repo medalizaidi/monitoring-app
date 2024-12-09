@@ -11,11 +11,10 @@ import logging
 app = Flask(__name__)
 
 # Connect to MongoDB
-client = MongoClient("mongodb://localhost:27017/")  # Replace with your MongoDB connection string
+client = MongoClient("mongodb://localhost:27017/") 
 db = client.mydatabase
-metrics_collection = db.system_metrics  # Collection for shift data
-daily_max_collection = db.daily_max_metrics  # Collection for daily max metrics
-
+metrics_collection = db.system_metrics  
+daily_max_collection = db.daily_max_metrics 
 @app.route("/")
 def home():
     return "Welcome to the System Metrics API!"
@@ -110,23 +109,17 @@ def get_daily_max(date):
 
 # Export daily metrics as PDF
 @app.route("/export-pdf/<string:date>", methods=["GET"])
-def export_pdf(date):
+def export_daily_max_pdf(date):
     data = daily_max_collection.find_one({"date": date}, {"_id": 0})
     if not data:
         return jsonify({"error": "No data found for the given date"}), 404
 
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-
-    pdf.cell(200, 10, txt=f"Daily Metrics for {date}", ln=True, align="C")
-    for key, value in data.items():
-        pdf.cell(200, 10, txt=f"{key}: {value}", ln=True)
-
-    file_name = f"{date}_metrics.pdf"
-    pdf.output(file_name)
+    # Generate PDF
+    file_name = f"{date}_daily_max_report.pdf"
+    create_daily_max_pdf(date, data, output_file=file_name)
 
     return send_file(file_name, as_attachment=True)
+
 
 # Send metrics PDF via email
 @app.route("/send-email/<string:date>", methods=["POST"])
@@ -151,11 +144,7 @@ def send_email(date):
     message["Subject"] = subject
 
     # Email body
-    body = f"Hello team 
-I hope this email finds you well,
-Please find the attached report of the PTO project,
-Best regards.
- {date}."
+    body = "Hello team I hope this email finds you well,Please find the attached report of the PTO project,Best regards."
     message.attach(MIMEText(body, "plain"))
 
     # Attach PDF
@@ -195,6 +184,75 @@ def delete_shift_data(date, day_shift):
     if result.deleted_count == 0:
         return jsonify({"error": "No data found to delete for the given date and shift"}), 404
     return jsonify({"message": "Data deleted successfully!"})
+# function to export as pdf
+def create_daily_max_pdf(date, max_data, output_file="daily_max_report.pdf"):
+
+    class PDF(FPDF):
+        def header(self):
+            self.set_font("Arial", "B", 16)
+            self.cell(0, 10, "Daily Monitoring Report", 0, 1, "C")
+            self.ln(10)
+
+        def footer(self):
+            self.set_y(-15)
+            self.set_font("Arial", "I", 8)
+            self.cell(0, 10, f"Page {self.page_no()}", 0, 0, "C")
+
+    pdf = PDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+
+    # Add Date
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(0, 10, f"Date: {date}", ln=True, align="L")
+    pdf.ln(10)
+
+    # Organizational Applications Section
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "Organizational Applications: PTO", ln=True)
+    pdf.ln(5)
+    pdf.set_font("Arial", size=12)
+    pdf.cell(60, 10, "Component", 1, 0, "C")
+    pdf.cell(60, 10, "CPU Usage (core)", 1, 0, "C")
+    pdf.cell(60, 10, "Memory Usage (MiB)", 1, 0, "C")
+    pdf.cell(60, 10, "Application Availability (%)", 1, 1, "C")
+
+    for component in ["blc-be", "blc-fe", "gco-be", "gco-fe", "sbp-fe"]:
+        cpu = max_data["max_cpu_usage"].get(component, "N/A")
+        memory = max_data["max_memory_usage"].get(component, "N/A")
+        availability = "100%" if component != "sbp-be" else "down"
+        pdf.cell(60, 10, component, 1)
+        pdf.cell(60, 10, str(cpu), 1)
+        pdf.cell(60, 10, str(memory), 1)
+        pdf.cell(60, 10, availability, 1)
+        pdf.ln(10)
+
+    pdf.ln(10)
+
+    # Tools Section
+    pdf.set_font("Arial", "B", 12)
+    pdf.cell(0, 10, "Tools:", ln=True)
+    pdf.ln(5)
+    pdf.set_font("Arial", size=12)
+    pdf.cell(60, 10, "Component", 1, 0, "C")
+    pdf.cell(60, 10, "CPU Usage (core)", 1, 0, "C")
+    pdf.cell(60, 10, "Memory Usage (MiB)", 1, 0, "C")
+    pdf.cell(60, 10, "Application Availability (%)", 1, 1, "C")
+
+    for component in max_data["max_cpu_usage"]:
+        if component not in ["blc-be", "blc-fe", "gco-be", "gco-fe", "sbp-fe"]:
+            cpu = max_data["max_cpu_usage"].get(component, "N/A")
+            memory = max_data["max_memory_usage"].get(component, "N/A")
+            availability = "100%"  # Assumes 100% unless specified otherwise
+            pdf.cell(60, 10, component, 1)
+            pdf.cell(60, 10, str(cpu), 1)
+            pdf.cell(60, 10, str(memory), 1)
+            pdf.cell(60, 10, availability, 1)
+            pdf.ln(10)
+
+    # Save PDF
+    pdf.output(output_file)
+    return output_file
 
 if __name__ == "__main__":
     app.run(debug=True)
